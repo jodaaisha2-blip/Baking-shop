@@ -1,19 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "./supabaseClient";
+import { useCart } from "./useCart";
 import "./App.css";
 
-const CART_KEY = "baking-shop-cart";
 // Deployed backend URL, set at build time (frontend/.env -> VITE_API_URL).
 // Empty locally, so requests use Vite's dev proxy to localhost:8000 instead.
 const API_BASE = import.meta.env.VITE_API_URL || "";
-
-function loadCart() {
-  try {
-    return JSON.parse(localStorage.getItem(CART_KEY)) || {};
-  } catch {
-    return {};
-  }
-}
 
 function money(n) {
   return "₦" + Number(n).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -24,7 +16,7 @@ export default function App() {
   const [products, setProducts] = useState([]);
   const [loadError, setLoadError] = useState("");
   const [category, setCategory] = useState("all");
-  const [cart, setCart] = useState(loadCart);
+  const cart = useCart(session); // database-backed, live-synced cart
   const [view, setView] = useState("shop"); // shop | cart | checkout | confirmation
   const [form, setForm] = useState({ full_name: "", address: "", phone: "" });
   const [placing, setPlacing] = useState(false);
@@ -51,37 +43,26 @@ export default function App() {
       });
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem(CART_KEY, JSON.stringify(cart));
-  }, [cart]);
-
   const visibleProducts = useMemo(
     () => (category === "all" ? products : products.filter((p) => p.category === category)),
     [products, category]
   );
 
+  // Adapt the cart hook's {id, quantity, product} rows to the {product, qty}
+  // shape the view components below already expect.
   const cartItems = useMemo(
-    () => Object.values(cart).filter((line) => line.qty > 0),
-    [cart]
+    () => cart.items.map((row) => ({ product: row.product, qty: row.quantity })),
+    [cart.items]
   );
   const cartCount = cartItems.reduce((sum, line) => sum + line.qty, 0);
   const cartTotal = cartItems.reduce((sum, line) => sum + line.qty * line.product.price, 0);
 
   function addToCart(product) {
-    setCart((c) => {
-      const existing = c[product.id];
-      return { ...c, [product.id]: { product, qty: (existing?.qty || 0) + 1 } };
-    });
-  }
-
-  function setQty(productId, qty) {
-    setCart((c) => {
-      if (qty <= 0) {
-        const { [productId]: _drop, ...rest } = c;
-        return rest;
-      }
-      return { ...c, [productId]: { ...c[productId], qty } };
-    });
+    if (!session) {
+      signIn(); // a database cart needs a signed-in owner
+      return;
+    }
+    cart.addItem(product);
   }
 
   async function signIn() {
@@ -152,7 +133,7 @@ export default function App() {
       }
 
       setLastOrder(order);
-      setCart({});
+      await cart.clearCart();
       setView("confirmation");
     } catch (err) {
       setPlaceError(err.message || "Couldn't place the order. Please try again.");
@@ -193,7 +174,7 @@ export default function App() {
           <CartView
             items={cartItems}
             total={cartTotal}
-            setQty={setQty}
+            setQty={cart.setQty}
             onBack={() => setView("shop")}
             onCheckout={goToCheckout}
           />
